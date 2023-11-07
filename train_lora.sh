@@ -1,7 +1,7 @@
 #! /bin/bash
 
 export MODEL_PATH="./dataroot/models/runwayml/stable-diffusion-v1-5"
-export DATASET_PATH="./lora-dataset"
+export DATASET_PATH="./dataset"
 export OUTPUT_PATH="./lora-output"
 
 accelerate launch --multi_gpu train_lora.py \

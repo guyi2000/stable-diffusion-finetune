@@ -7,7 +7,10 @@ import torch
 
 
 base_model_path = "./dataroot/models/runwayml/stable-diffusion-v1-5"
-controlnet_path = "./controlnet-output"
+controlnet_path = "./controlnet-lora-output"
+lora_path = "./controlnet-lora-output/pytorch_lora_weights.safetensors"
+control_image_path = "./dataset/hint/bjy_7_1_p1.png"
+prompt = "High house in intensity 8.0"
 
 controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=torch.float16)
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
@@ -16,7 +19,7 @@ pipe = StableDiffusionControlNetPipeline.from_pretrained(
     torch_dtype=torch.float16,
     safety_checker=None,
 )
-pipe.unet.load_attn_procs("./lora-output/pytorch_lora_weights.safetensors")
+pipe.unet.load_attn_procs(lora_path)
 # speed up diffusion process with faster scheduler and memory optimization
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 # remove following line if xformers is not installed or when using Torch 2.0.
@@ -24,8 +27,7 @@ pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 # memory optimization.
 pipe.enable_model_cpu_offload()
 
-control_image = load_image("./controlnet-dataset/hint/bjy_7_1_p1.png")
-prompt = "High house in intensity 8.0"
+control_image = load_image(control_image_path)
 
 # generate image
 generator = torch.manual_seed(100)

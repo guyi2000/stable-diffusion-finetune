@@ -283,6 +283,16 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--lora_model_name_or_path",
+        type=str,
+        default=None,
+        help=(
+            "Path to pretrained lora model or model identifier from"
+            " huggingface.co/models. If not specified controlnet weights are"
+            " initialized from noise."
+        ),
+    )
+    parser.add_argument(
         "--revision",
         type=str,
         default=None,
@@ -662,6 +672,12 @@ def parse_args(input_args=None):
             " https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
         ),
     )
+    parser.add_argument(
+        "--rank",
+        type=int,
+        default=4,
+        help="The dimension of the LoRA update matrices.",
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -953,7 +969,7 @@ def main(args):
         controlnet = ControlNetModel.from_unet(unet)
 
     # `accelerate` 0.16.0 will have better support for customized saving
-    if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
+    if version.parse(accelerate.__version__) >= version.parse("1.16.0"):
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
         def save_model_hook(models, weights, output_dir):
             if accelerator.is_main_process:
@@ -990,29 +1006,32 @@ def main(args):
     text_encoder.requires_grad_(False)
     controlnet.train()
 
-    lora_attn_procs = {}
-    for name in unet.attn_processors.keys():
-        cross_attention_dim = (
-            None
-            if name.endswith("attn1.processor")
-            else unet.config.cross_attention_dim
-        )
-        if name.startswith("mid_block"):
-            hidden_size = unet.config.block_out_channels[-1]
-        elif name.startswith("up_blocks"):
-            block_id = int(name[len("up_blocks.")])
-            hidden_size = list(reversed(unet.config.block_out_channels))[block_id]
-        elif name.startswith("down_blocks"):
-            block_id = int(name[len("down_blocks.")])
-            hidden_size = unet.config.block_out_channels[block_id]
+    if args.lora_model_name_or_path:
+        logger.info("Loading existing lora weights")
+        unet.load_attn_procs(args.lora_model_name_or_path)
+    else:
+        lora_attn_procs = {}
+        for name in unet.attn_processors.keys():
+            cross_attention_dim = (
+                None
+                if name.endswith("attn1.processor")
+                else unet.config.cross_attention_dim
+            )
+            if name.startswith("mid_block"):
+                hidden_size = unet.config.block_out_channels[-1]
+            elif name.startswith("up_blocks"):
+                block_id = int(name[len("up_blocks.")])
+                hidden_size = list(reversed(unet.config.block_out_channels))[block_id]
+            elif name.startswith("down_blocks"):
+                block_id = int(name[len("down_blocks.")])
+                hidden_size = unet.config.block_out_channels[block_id]
 
-        lora_attn_procs[name] = LoRAAttnProcessor(
-            hidden_size=hidden_size,
-            cross_attention_dim=cross_attention_dim,
-            rank=args.rank,
-        )
-
-    unet.set_attn_processor(lora_attn_procs)
+            lora_attn_procs[name] = LoRAAttnProcessor(
+                hidden_size=hidden_size,
+                cross_attention_dim=cross_attention_dim,
+                rank=args.rank,
+            )
+        unet.set_attn_processor(lora_attn_procs)
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -1119,7 +1138,13 @@ def main(args):
     )
 
     # Prepare everything with our `accelerator`.
-    controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+    (
+        controlnet,
+        lora_layers,
+        optimizer,
+        train_dataloader,
+        lr_scheduler,
+    ) = accelerator.prepare(
         controlnet, lora_layers, optimizer, train_dataloader, lr_scheduler
     )
 
@@ -1215,8 +1240,9 @@ def main(args):
 
     image_logs = None
     for epoch in range(first_epoch, args.num_train_epochs):
+        unet.train()
         for step, batch in enumerate(train_dataloader):
-            with accelerator.accumulate(controlnet):
+            with accelerator.accumulate(controlnet, unet):
                 # Convert images to latent space
                 latents = vae.encode(
                     batch["pixel_values"].to(dtype=weight_dtype)
@@ -1282,7 +1308,10 @@ def main(args):
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = controlnet.parameters()
+                    params_to_clip = chain(
+                        controlnet.parameters(),
+                        lora_layers.parameters(),
+                    )
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
@@ -1361,6 +1390,9 @@ def main(args):
     if accelerator.is_main_process:
         controlnet = accelerator.unwrap_model(controlnet)
         controlnet.save_pretrained(args.output_dir)
+
+        unet = unet.to(torch.float32)
+        unet.save_attn_procs(args.output_dir)
 
         if args.push_to_hub:
             save_model_card(
