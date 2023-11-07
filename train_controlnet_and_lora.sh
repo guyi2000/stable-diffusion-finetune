@@ -2,10 +2,14 @@
 
 export MODEL_PATH="./dataroot/models/runwayml/stable-diffusion-v1-5"
 export DATASET_PATH="./controlnet-dataset"
-export OUTPUT_PATH="./controlnet-output"
+export CONTROLNET_PATH="./controlnet-output"
+export LORA_PATH="./lora-output/pytorch_lora_weights.safetensors"
+export OUTPUT_PATH="./controlnet-lora-output"
 
-accelerate launch --multi_gpu train_controlnet.py \
+accelerate launch --multi_gpu train_controlnet_and_lora.py \
   --pretrained_model_name_or_path=$MODEL_PATH \
+  --controlnet_model_name_or_path=$CONTROLNET_PATH \
+  --lora_model_name_or_path=$LORA_PATH \
   --train_data_dir=$DATASET_PATH \
   --output_dir=$OUTPUT_PATH \
   --num_train_epochs=200 \

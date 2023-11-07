@@ -39,6 +39,7 @@ from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig
 
 import diffusers
+from itertools import chain
 from diffusers import (
     AutoencoderKL,
     ControlNetModel,
@@ -47,6 +48,8 @@ from diffusers import (
     UNet2DConditionModel,
     UniPCMultistepScheduler,
 )
+from diffusers.loaders import AttnProcsLayers
+from diffusers.models.attention_processor import LoRAAttnProcessor
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
@@ -987,6 +990,30 @@ def main(args):
     text_encoder.requires_grad_(False)
     controlnet.train()
 
+    lora_attn_procs = {}
+    for name in unet.attn_processors.keys():
+        cross_attention_dim = (
+            None
+            if name.endswith("attn1.processor")
+            else unet.config.cross_attention_dim
+        )
+        if name.startswith("mid_block"):
+            hidden_size = unet.config.block_out_channels[-1]
+        elif name.startswith("up_blocks"):
+            block_id = int(name[len("up_blocks.")])
+            hidden_size = list(reversed(unet.config.block_out_channels))[block_id]
+        elif name.startswith("down_blocks"):
+            block_id = int(name[len("down_blocks.")])
+            hidden_size = unet.config.block_out_channels[block_id]
+
+        lora_attn_procs[name] = LoRAAttnProcessor(
+            hidden_size=hidden_size,
+            cross_attention_dim=cross_attention_dim,
+            rank=args.rank,
+        )
+
+    unet.set_attn_processor(lora_attn_procs)
+
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
             import xformers
@@ -1006,6 +1033,8 @@ def main(args):
             raise ValueError(
                 "xformers is not available. Make sure it is installed correctly"
             )
+
+    lora_layers = AttnProcsLayers(unet.attn_processors)
 
     if args.gradient_checkpointing:
         controlnet.enable_gradient_checkpointing()
@@ -1052,7 +1081,7 @@ def main(args):
         optimizer_class = torch.optim.AdamW
 
     # Optimizer creation
-    params_to_optimize = controlnet.parameters()
+    params_to_optimize = chain(controlnet.parameters(), lora_layers.parameters())
     optimizer = optimizer_class(
         params_to_optimize,
         lr=args.learning_rate,
@@ -1091,7 +1120,7 @@ def main(args):
 
     # Prepare everything with our `accelerator`.
     controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        controlnet, optimizer, train_dataloader, lr_scheduler
+        controlnet, lora_layers, optimizer, train_dataloader, lr_scheduler
     )
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
