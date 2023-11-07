@@ -27,11 +27,19 @@ And initialize an [🤗Accelerate](https://github.com/huggingface/accelerate/) e
 accelerate config
 ```
 
+Then you should download the pretrained stable diffusion model using `model_download.py`:
+
+```bash
+python model_download.py --repo_id runwayml/stable-diffusion-v1-5
+# If you cannot connect to huggingface, you should use the following command:
+python model_download.py --repo_id runwayml/stable-diffusion-v1-5 --mirror
+```
+
 ## Making your own datasets
 
 To fine-tune stable diffusion model on your own dataset, you need to prepare your dataset in the following format:
 
-In `dataset` directory, you should create three subdirectory `jpg`, `hint`, and `train`. In `jpg` directory, you should put all the target images in your dataset. In `hint` directory, you should put all the source images (condition images) in your dataset. In `train` directory, you should put a `metadata.jsonl`. The `metadata.jsonl` should be in the following format:
+Firstly create the `dataset` directory in root directory, and you should create three subdirectory `jpg`, `hint`, and `train`. In `jpg` directory, you should put all the target images in your dataset. In `hint` directory, you should put all the source images (condition images) in your dataset. In `train` directory, you should put a `metadata.jsonl`. The `metadata.jsonl` should be in the following format:
 
 ```json
 {"jpg": "./dataset/jpg/<name_of_target_image_1>", "txt": "<prompt_1>", "hint": "./dataset/hint/<name_of_source_image_1>"}
@@ -44,7 +52,7 @@ In `dataset` directory, you should create three subdirectory `jpg`, `hint`, and 
 Here is the structure of the `dataset` directory:
 
 ```bash
-.
+dataset
 ├── hint
 │   ├── a.png
 │   ├── b.png
